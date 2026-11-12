@@ -1,0 +1,12 @@
+node_modules/
+data/
+*.log
+reference/
+.qa-final/
+.chrome-*/
+en.txt
+*.code-workspace
+NASA Space Apps Challenge*.html
+NASA Space Apps Challenge*_files/
+*-brand*.png
+reference-home.png
