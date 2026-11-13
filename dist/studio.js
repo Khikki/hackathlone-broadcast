@@ -1,3 +1,4 @@
+import { resolveTheme } from './theme.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let state, toastTimer, connected=false, writeQueue=Promise.resolve(), draftDirty=false;
@@ -16,14 +17,18 @@ function update(change,message){
   });
   writeQueue=run.catch(e=>toast(e.message));return run;
 }
-function fill(form,data){for(const [key,value] of Object.entries(data)){const el=form.elements.namedItem(key);if(el&&document.activeElement!==el){if(el.type==='checkbox')el.checked=value;else el.value=value;}}}
-function draft(){const f=$('guest-form');$('draft-name').textContent=f.elements.name.value || 'Guest name';$('draft-meta').textContent=[f.elements.role.value,f.elements.organization.value].filter(Boolean).join(' / ');}
+function fill(form,data){if(form.elements.logo?.type==='hidden' && !Object.hasOwn(data,'logo'))form.elements.logo.value='';for(const [key,value] of Object.entries(data)){const el=form.elements.namedItem(key);if(el&&document.activeElement!==el){if(el.type==='checkbox')el.checked=value;else el.value=value;}}}
+function companyPreview(form){const logo=form.elements.logo.value;const img=form.querySelector('[data-company-preview]');img.hidden=!logo;if(logo)img.src=logo;else img.removeAttribute('src');}
+function draft(){companyPreview($('guest-form'));const f=$('guest-form');$('draft-name').textContent=f.elements.name.value || 'Guest name';$('draft-meta').textContent=[f.elements.role.value,f.elements.organization.value].filter(Boolean).join(' / ');}
 const tabInfo={studio:['Ready for <span>broadcast.</span>','Names, moments and people. Control exactly what your audience sees.'],guests:['People of the <span>mission.</span>','Prepare guest cards ahead of time, then put the right person on screen at the right moment.'],teams:['Teams on <span>stage.</span>','Choose a team to show its name in the bottom-centre on-stage graphic.'],schedule:['The flight <span>plan.</span>','Event timing, upcoming sessions and important deadlines.'],partners:['Built <span>together.</span>','Organisers, partners and communities making the mission possible.'],settings:['Your broadcast <span>system.</span>','OBS sources, brand graphics and production backups.']};
 function tab(name){document.querySelectorAll('.tab').forEach(el=>el.classList.toggle('active',el.id==='tab-'+name));document.querySelectorAll('.nav').forEach(el=>el.classList.toggle('active',el.dataset.tab===name));$('page-title').innerHTML=tabInfo[name][0];$('page-description').textContent=tabInfo[name][1];$('breadcrumb').textContent=document.querySelector(`[data-tab="${name}"]`).textContent.trim();}
 document.querySelectorAll('[data-tab]').forEach(el=>el.onclick=()=>tab(el.dataset.tab));
-let libraryKey='';
+let libraryKey='', editingPartner=null;
+const partnerBackground=p=>p.background || (['/assets/logo.svg','/assets/spaceapps.svg'].includes(p.logo)?'dark':'light');
 function render(){
   if(!state)return;
+  for(const [id,key] of [['scene-background','sceneBackground'],['scene-transition','sceneTransition']])if(document.activeElement!==$(id))$(id).value=state.settings[key] || 'random';
+  applyTheme();
   document.documentElement.style.setProperty('--accent',state.settings.accent);
   document.querySelectorAll('[data-layer]').forEach(el=>el.setAttribute('aria-pressed',state.layers[el.dataset.layer]));
   document.querySelectorAll('[data-scene]').forEach(el=>el.classList.toggle('selected',el.dataset.scene===state.scene));
@@ -35,12 +40,14 @@ function render(){
   $('pause-timer').textContent=state.timer.endAt?'Ⅱ Pause':'▶ Resume';
   const key=JSON.stringify([state.guests,state.teams,state.schedule,state.activeSchedule,state.partners]);
   if(key!==libraryKey){
-    $('guest-list').innerHTML=state.guests.map((g,i)=>`<div class="list-item"><div class="avatar">${esc(g.name.charAt(0))}</div><div class="info"><b>${esc(g.name)}</b><small>${esc([g.role,g.organization].filter(Boolean).join(' / '))}</small></div><button class="secondary" data-load-guest="${i}">Prepare ↗</button><button class="icon-button" data-delete-guest="${i}" aria-label="Delete guest">×</button></div>`).join('')||'<div class="empty">Add your first guest</div>';
-    $('schedule-list').innerHTML=state.schedule.map((p,i)=>`<div class="list-item ${i===state.activeSchedule?'selected':''}"><div class="info"><small>${esc(p.day)} / ${esc(p.time)}</small><b>${esc(p.title)}</b><small>${esc(p.detail)}</small></div><button class="secondary" data-select-schedule="${i}">${i===state.activeSchedule?'Selected':'Select'}</button><button class="icon-button" data-delete-schedule="${i}" aria-label="Delete item">×</button></div>`).join('')||'<div class="empty">The run of show is empty</div>';
-    $('partner-list').innerHTML=state.partners.map((p,i)=>`<div class="list-item">${p.logo?`<img src="${esc(p.logo)}" alt="${esc(p.name)}">`:''}<div class="info"><b>${esc(p.name)}</b><small>${esc(p.label)}</small></div><button class="icon-button" data-move-partner="${i}" ${i===0?'disabled':''} aria-label="Move organisation up">↑</button><button class="icon-button" data-delete-partner="${i}" aria-label="Delete organisation">×</button></div>`).join('')||'<div class="empty">Add an organiser or partner</div>';
-    $('team-list').innerHTML=state.teams.map((team,i)=>`<article class="team-card"><div><span>TEAM ${String(i+1).padStart(2,'0')}</span><h3>${esc(team)}</h3></div><button class="accent" data-team-index="${i}">↗ Bring on stage</button></article>`).join('')||'<div class="empty">No teams in the saved event page</div>';
+    $('guest-list').innerHTML=state.guests.map((g,i)=>`<div class="list-item"><div class="avatar">${esc(g.name.charAt(0))}</div><div class="info"><b>${esc(g.name)}</b><small>${esc([g.role,g.organization].filter(Boolean).join(' / '))}</small></div><button class="secondary" data-edit-guest="${i}">Edit</button><button class="secondary" data-load-guest="${i}">Prepare ↗</button><button class="icon-button" data-delete-guest="${i}" aria-label="Delete guest">×</button></div>`).join('')||'<div class="empty">Add your first guest</div>';
+    $('schedule-list').innerHTML=state.schedule.map((p,i)=>`<div class="list-item ${i===state.activeSchedule?'selected':''}"><div class="info"><small>${esc(p.day)} / ${esc(p.time)}</small><b>${esc(p.title)}</b><small>${esc(p.detail)}</small></div><button class="secondary" data-edit-schedule="${i}">Edit</button><button class="secondary" data-select-schedule="${i}">${i===state.activeSchedule?'Selected':'Select'}</button><button class="icon-button" data-delete-schedule="${i}" aria-label="Delete item">×</button></div>`).join('')||'<div class="empty">The run of show is empty</div>';
+    $('partner-list').innerHTML=state.partners.map((p,i)=>`<div class="list-item">${p.logo?`<img class="partner-logo ${partnerBackground(p)}" src="${esc(p.logo)}" alt="${esc(p.name)}">`:''}<div class="info"><b>${esc(p.name)}</b><small>${esc(p.label)}</small></div><button class="secondary" data-edit-partner="${i}">Edit</button><button class="icon-button" data-move-partner="${i}" ${i===0?'disabled':''} aria-label="Move organisation up">↑</button><button class="icon-button" data-delete-partner="${i}" aria-label="Delete organisation">×</button></div>`).join('')||'<div class="empty">Add an organiser or partner</div>';
+    $('team-list').innerHTML=state.teams.map((team,i)=>`<article class="team-card"><div><span>TEAM ${String(i+1).padStart(2,'0')}</span><h3>${esc(team)}</h3></div><div class="team-actions"><button class="accent" data-team-index="${i}">↗ Bring on stage</button><button class="secondary" data-edit-team="${i}">Edit</button><button class="icon-button" data-delete-team="${i}" aria-label="Delete team">×</button></div></article>`).join('')||'<div class="empty">No teams in the saved event page</div>';
     libraryKey=key;
   }
+  document.querySelectorAll('[data-widget-style]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.widgetStyle===(state.settings.widgetStyle || 'compact')));
+  document.querySelectorAll('[data-logo-variant]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.logoVariant===(state.settings.logoVariant || 'icon')));
   tick();
 }
 async function loadState(){
@@ -55,35 +62,37 @@ stream.onerror=()=>{setConnection(false);loadState().catch(()=>{});};
 loadState().catch(()=>setConnection(false));
 document.addEventListener('click',e=>{
   const b=e.target.closest('button');if(!b||!state)return;
-  if(b.dataset.layer)update(s=>({layers:{...s.layers,[b.dataset.layer]:!s.layers[b.dataset.layer]},...(b.dataset.layer==='lower'?{lowerHideAt:null}:{})})).catch(()=>{});
-  if(b.dataset.scene)update(s=>{
-    const timerLayer = ['starting','break','ending'].includes(b.dataset.scene) ? {timer:b.dataset.scene==='break'} : {};
-    return {scene:b.dataset.scene,layers:{...s.layers,...timerLayer}};
-  },'Scene switched').catch(()=>{});
+  for(const [key,field] of [['editGuest','guests'],['editSchedule','schedule'],['editTeam','teams']])if(b.dataset[key]!==undefined)beginEdit(field,+b.dataset[key]);
+  if(b.dataset.widgetStyle)update(s=>({settings:{...s.settings,widgetStyle:b.dataset.widgetStyle}}),'Widget variation updated').catch(()=>{});
+  if(b.dataset.logoVariant)update(s=>({settings:{...s.settings,logoVariant:b.dataset.logoVariant}}),'Logo updated').catch(()=>{});
+  if(b.dataset.layer)update(s=>({layers:{...s.layers,[b.dataset.layer]:!s.layers[b.dataset.layer]}})).catch(()=>{});
+  if(b.dataset.scene)update({scene:b.dataset.scene},'Scene switched').catch(()=>{});
   if(b.dataset.loadGuest!==undefined){fill($('guest-form'),state.guests[+b.dataset.loadGuest]);draftDirty=true;draft();tab('studio');toast('Guest prepared. Press “Take live” when ready.');}
-  if(b.dataset.teamIndex!==undefined){const team=state.teams[+b.dataset.teamIndex];if(team)update(s=>({guest:{name:team,role:'Presenting team',organization:'NASA Space Apps Challenge'},lowerPosition:'center',layers:{...s.layers,lower:true},lowerHideAt:s.settings.autoHide?Date.now()+s.settings.autoHide*1000:null}),'Team is on stage').catch(()=>{});}
-  for(const [data,field] of [['deleteGuest','guests'],['deletePartner','partners'],['deleteSchedule','schedule']])if(b.dataset[data]!==undefined)update(s=>({[field]:s[field].filter((_,i)=>i!==+b.dataset[data]),...(field==='schedule'?{activeSchedule:Math.max(0,s.activeSchedule-(+b.dataset[data]<s.activeSchedule?1:0))}:{})}),'Card deleted').catch(()=>{});
+  if(b.dataset.teamIndex!==undefined){const team=state.teams[+b.dataset.teamIndex];if(team)update(s=>({guest:{name:team,role:'Presenting team',organization:'NASA Space Apps Challenge'},lowerPosition:'center',layers:{...s.layers,lower:true}}),'Team is on stage').catch(()=>{});}
+  for(const [data,field] of [['deleteTeam','teams'],['deleteGuest','guests'],['deletePartner','partners'],['deleteSchedule','schedule']])if(b.dataset[data]!==undefined)update(s=>({[field]:s[field].filter((_,i)=>i!==+b.dataset[data]),...(field==='schedule'?{activeSchedule:Math.max(0,s.activeSchedule-(+b.dataset[data]<s.activeSchedule?1:0))}:{})}),'Card deleted').catch(()=>{});
   if(b.dataset.selectSchedule!==undefined)update({activeSchedule:+b.dataset.selectSchedule}).catch(()=>{});
+  if(b.dataset.editPartner!==undefined){editingPartner=state.partners[+b.dataset.editPartner];fill($('partner-form'),{name:editingPartner.name,label:editingPartner.label,background:partnerBackground(editingPartner)});$('partner-form').elements.logo.value='';$('partner-form-title').textContent='Edit organisation';$('save-partner').textContent='Save changes';$('cancel-partner').hidden=false;$('partner-form').scrollIntoView({behavior:'smooth',block:'center'});}
   if(b.dataset.movePartner!==undefined)update(s=>{const p=[...s.partners],i=+b.dataset.movePartner;[p[i-1],p[i]]=[p[i],p[i-1]];return{partners:p};}).catch(()=>{});
 });
 function panic(){update(s=>({scene:'live',layers:Object.fromEntries(Object.keys(s.layers).map(k=>[k,false])),lowerHideAt:null}),'All graphics hidden').catch(()=>{});}
 $('panic').onclick=panic;addEventListener('keydown',e=>{if(e.key==='Escape')panic();});
 $('guest-form').oninput=()=>{draftDirty=true;draft();};
-$('guest-form').onsubmit=async e=>{e.preventDefault();const guest=Object.fromEntries(new FormData(e.target));try{await update(s=>({guest,lowerPosition:'left',layers:{...s.layers,lower:true},lowerHideAt:s.settings.autoHide?Date.now()+s.settings.autoHide*1000:null}),'Guest is live');draftDirty=false;}catch{}};
+$('guest-form').onsubmit=async e=>{e.preventDefault();const guest=Object.fromEntries(new FormData(e.target));try{await update(s=>({guest,lowerPosition:'left',layers:{...s.layers,lower:true}}),'Guest is live');draftDirty=false;}catch{}};
 $('hide-guest').onclick=()=>update(s=>({layers:{...s.layers,lower:false},lowerHideAt:null})).catch(()=>{});
-$('auto-hide').onchange=e=>update(s=>({settings:{...s.settings,autoHide:+e.target.value}})).catch(()=>{});
-$('save-guest-form').onsubmit=async e=>{e.preventDefault();const guest=Object.fromEntries(new FormData(e.target));try{await update(s=>({guests:[...s.guests,guest]}),'Guest saved');e.target.reset();}catch{}};
+$('auto-hide').onchange=e=>{const seconds=+e.target.value;update(s=>({settings:{...s.settings,autoHide:seconds}}),seconds?'Auto-hide updated; visible card countdown restarted':'Manual mode: auto-hide cancelled').catch(()=>{});};
 $('announcement-form').onsubmit=e=>{e.preventDefault();update({announcement:Object.fromEntries(new FormData(e.target))},'Ticker updated').catch(()=>{});};
 $('timer-form').onsubmit=e=>{e.preventDefault();const data=new FormData(e.target),duration=+data.get('minutes')*60;update(s=>({timer:{duration,remaining:duration,endAt:Date.now()+duration*1000,label:data.get('label')},layers:{...s.layers,timer:true}}),'Countdown started').catch(()=>{});};
 $('pause-timer').onclick=()=>update(s=>({timer:s.timer.endAt?{...s.timer,remaining:Math.max(0,Math.ceil((s.timer.endAt-Date.now())/1000)),endAt:null}:{...s.timer,endAt:Date.now()+s.timer.remaining*1000}})).catch(()=>{});
 $('reset-timer').onclick=()=>update(s=>({timer:{...s.timer,remaining:s.timer.duration,endAt:null}}),'Countdown reset').catch(()=>{});
-$('schedule-form').onsubmit=async e=>{e.preventDefault();const item=Object.fromEntries(new FormData(e.target));try{await update(s=>({schedule:[...s.schedule,item]}),'Item added');e.target.reset();}catch{}};
 $('show-agenda').onclick=()=>update(s=>({layers:{...s.layers,agenda:true}}),'Agenda is live').catch(()=>{});
 $('show-partners').onclick=()=>update(s=>({layers:{...s.layers,partners:true}}),'Partner strip is live').catch(()=>{});
+function resetPartner(){editingPartner=null;$('partner-form').reset();$('partner-form-title').textContent='Add an organisation';$('save-partner').textContent='+ Add organisation';$('cancel-partner').hidden=true;}
+$('cancel-partner').onclick=resetPartner;
 $('partner-form').onsubmit=async e=>{
-  e.preventDefault();const f=e.target,data=new FormData(f),file=data.get('logo');let logo='';
+  e.preventDefault();const f=e.target,data=new FormData(f),file=data.get('logo');let logo=editingPartner?.logo || '';
+  const original=editingPartner && JSON.stringify(editingPartner);
   try{if(file?.size){if(file.size>1000000)throw new Error('The logo must be smaller than 1 MB');if(!['image/png','image/jpeg','image/webp'].includes(file.type))throw new Error('Choose a PNG, JPEG or WebP file');logo=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result);r.onerror=reject;r.readAsDataURL(file);});}
-  await update(s=>({partners:[...s.partners,{name:data.get('name'),label:data.get('label'),logo}]}),'Organisation added');f.reset();}catch(e){toast(e.message);}
+  await update(s=>{const card={name:data.get('name'),label:data.get('label'),logo,background:data.get('background')};if(!original)return {partners:[...s.partners,card]};const index=s.partners.findIndex(p=>JSON.stringify(p)===original);if(index<0)throw new Error('This card changed. Select Edit again.');return {partners:s.partners.map((p,i)=>i===index?card:p)};},'Organisation saved');resetPartner();}catch(e){toast(e.message);}
 };
 $('event-form').onsubmit=e=>{e.preventDefault();update({event:Object.fromEntries(new FormData(e.target))},'Event saved').catch(()=>{});};
 $('settings-form').onsubmit=e=>{e.preventDefault();const f=new FormData(e.target);update(s=>({settings:{...s.settings,accent:f.get('accent'),safe:+f.get('safe'),speed:+f.get('speed'),guides:f.has('guides')}}),'Graphics settings applied').catch(()=>{});};
@@ -91,5 +100,20 @@ $('obs-links').innerHTML=[['Combined output',''],['Guest lower third','lower'],[
 $('obs-links').onclick=async e=>{const b=e.target.closest('[data-copy]');if(!b)return;try{await navigator.clipboard.writeText(b.dataset.copy);toast('URL copied');}catch{b.previousElementSibling.select();toast('Selected — press Ctrl+C to copy');}};
 $('export').onclick=()=>{if(!state)return;const snapshot={...state,timer:{...state.timer,remaining:Math.max(0,Math.ceil(state.timer.endAt?(state.timer.endAt-Date.now())/1000:state.timer.remaining)),endAt:null}};const blob=new Blob([JSON.stringify(snapshot,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='hackathlone-broadcast.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 $('import').onchange=async e=>{const file=e.target.files[0];if(!file)return;try{if(file.size>8000000)throw new Error('The file is too large');const data=JSON.parse(await file.text());if(!data.event||!data.layers||!Array.isArray(data.guests)||!Array.isArray(data.schedule)||!data.settings)throw new Error('This is not a HackAthlone broadcast backup');await update({...data,scene:'live',layers:{bug:false,lower:false,partners:false,ticker:false,timer:false,agenda:false},lowerHideAt:null,timer:{...data.timer,endAt:null}},'Backup restored');draftDirty=false;render();}catch(err){toast(err.message);}e.target.value='';};
-function tick(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('en-GB',{timeZone:'Europe/Dublin'})+' DUB';if(!state)return;const n=Math.max(0,Math.ceil(state.timer.endAt?(state.timer.endAt-Date.now())/1000:state.timer.remaining));$('timer-display').textContent=(n>=3600?String(Math.floor(n/3600)).padStart(2,'0')+':':'')+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0');}
+function tick(){if(state){const left=state.lowerHideAt?Math.max(0,Math.ceil((state.lowerHideAt-Date.now())/1000)):0;$('auto-hide-status').textContent=!state.layers.lower?'Hidden':state.scene!=='live'?'Waiting for Live scene':left?'Hides in '+left+'s':'Visible · manual';}const d=new Date();$('clock').textContent=d.toLocaleTimeString('en-GB',{timeZone:'Europe/Dublin'})+' DUB';if(!state)return;const n=Math.max(0,Math.ceil(state.timer.endAt?(state.timer.endAt-Date.now())/1000:state.timer.remaining));$('timer-display').textContent=(n>=3600?String(Math.floor(n/3600)).padStart(2,'0')+':':'')+String(Math.floor(n/60)%60).padStart(2,'0')+':'+String(n%60).padStart(2,'0');}
 tick();setInterval(tick,250);
+
+function applyTheme(){const mode=state?.settings.themeMode || 'light';const dark=resolveTheme(mode)==='dark';document.documentElement.dataset.theme=dark?'dark':'light';document.querySelectorAll('[data-theme-mode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.themeMode===mode));document.querySelector('.brand-logo').src=dark?'assets/logo.svg':'assets/logo-light.svg';}
+document.querySelectorAll('[data-theme-mode]').forEach(b=>b.onclick=()=>update(s=>({settings:{...s.settings,themeMode:b.dataset.themeMode}}),'Broadcast theme updated').catch(()=>{}));applyTheme();setInterval(applyTheme,1000);
+document.querySelectorAll('[data-company-upload]').forEach(input=>input.onchange=async()=>{const file=input.files[0];if(!file)return;try{if(file.size>1000000 || !['image/png','image/jpeg','image/webp'].includes(file.type))throw new Error('Choose PNG, JPEG or WebP up to 1 MB');const logo=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('Could not read image'));reader.readAsDataURL(file);});input.form.elements.logo.value=logo;companyPreview(input.form);if(input.form.id==='guest-form')draftDirty=true;}catch(e){toast(e.message);}input.value='';});
+document.querySelectorAll('[data-clear-company]').forEach(b=>b.onclick=()=>{b.form.elements.logo.value='';b.form.querySelector('[data-company-upload]').value='';companyPreview(b.form);if(b.form.id==='guest-form')draftDirty=true;});
+
+const editors={guests:{form:'save-guest-form',title:'guest-editor-title',button:'guest-save-label',label:'New guest card'},schedule:{form:'schedule-form',title:'schedule-editor-title',button:'schedule-save-label',label:'Add to the run of show'},teams:{form:'team-form',title:null,button:'team-save-label',label:'Team'}};
+const editSnapshots={};
+function beginEdit(field,index){const cfg=editors[field],item=state[field][index];editSnapshots[field]={index,snapshot:JSON.stringify(state[field])};fill($(cfg.form),field==='teams'?{name:item}:item);if(field==='guests')companyPreview($(cfg.form));if(cfg.title)$(cfg.title).textContent='Edit '+(field==='guests'?'guest':'programme item');$(cfg.button).textContent='Save changes';document.querySelector(`[data-cancel-edit="${field}"]`).hidden=false;$(cfg.form).scrollIntoView({behavior:'smooth',block:'center'});}
+function resetEditor(field){delete editSnapshots[field];const cfg=editors[field];$(cfg.form).reset();if(cfg.title)$(cfg.title).textContent=cfg.label;$(cfg.button).textContent=field==='guests'?'+ Save guest':field==='teams'?'+ Add team':'+ Add item';document.querySelector(`[data-cancel-edit="${field}"]`).hidden=true;if(field==='guests')companyPreview($(cfg.form));}
+for(const [field,cfg] of Object.entries(editors)){
+  document.querySelector(`[data-cancel-edit="${field}"]`).onclick=()=>resetEditor(field);
+  $(cfg.form).onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));const item=field==='teams'?data.name.trim():data;if(field==='teams'&&!item)return;const edit=editSnapshots[field];try{await update(s=>{if(edit && JSON.stringify(s[field])!==edit.snapshot)throw new Error('This list changed. Cancel and select Edit again.');return {[field]:edit?s[field].map((v,i)=>i===edit.index?item:v):[...s[field],item]};},edit?'Changes saved':'Added');resetEditor(field);}catch{}};
+}
+for(const [id,key] of [['scene-background','sceneBackground'],['scene-transition','sceneTransition']])$(id).onchange=e=>{const value=e.target.value;update(s=>({settings:{...s.settings,[key]:value}}),'Scene motion updated').catch(()=>{});};

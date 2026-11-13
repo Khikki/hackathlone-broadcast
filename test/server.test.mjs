@@ -52,10 +52,55 @@ test('pushes guest updates to independently connected overlay clients',async()=>
   const next=decoder.decode((await reader.read()).value);assert.match(next,/Test Speaker/);assert.match(next,/"lower":true/);abort.abort();
 });
 test('auto-hides a lower third on the server without an open control panel',async()=>{
-  const state=await get();await put({layers:{...state.layers,lower:true},lowerHideAt:Date.now()+100});
+  const state=await get();await put({settings:{...state.settings,autoHide:8}});await put({layers:{...state.layers,lower:true},lowerHideAt:Date.now()+100});
   await new Promise(resolve=>setTimeout(resolve,600));assert.equal((await get()).layers.lower,false);
 });
 test('persists configuration and restores it after server restart',async()=>{
   await put({event:{title:'Persisted Event'}});assert.equal(JSON.parse(await readFile(path.join(dir,'state.json'),'utf8')).event.title,'Persisted Event');
   await stop();await launch();assert.equal((await get()).event.title,'Persisted Event');
+});
+
+test('auto-hide starts on show, cancels in manual, and ignores unrelated layer updates',async()=>{
+  let s=await get();
+  s=await put({scene:'live',layers:{...s.layers,lower:false},settings:{...s.settings,autoHide:8}});
+  s=await put({layers:{...s.layers,lower:true}});assert.ok(s.lowerHideAt>Date.now()+7000);
+  const deadline=s.lowerHideAt;
+  s=await put({layers:{...s.layers,partners:!s.layers.partners}});assert.equal(s.lowerHideAt,deadline);
+  s=await put({settings:{...s.settings,autoHide:0}});assert.equal(s.lowerHideAt,null);assert.equal(s.layers.lower,true);
+  s=await put({settings:{...s.settings,autoHide:20}});assert.ok(s.lowerHideAt>Date.now()+19000);
+  s=await put({scene:'break'});assert.equal(s.lowerHideAt,null);
+  s=await put({scene:'live'});assert.ok(s.lowerHideAt>Date.now()+19000);
+});
+test('saves all logo and layout variations',async()=>{
+  for(const logoVariant of ['icon','full','space','combined','stacked','icon-space']){
+    const s=await get();const next=await put({settings:{...s.settings,logoVariant,widgetStyle:'dark'}});
+    assert.equal(next.settings.logoVariant,logoVariant);assert.equal(next.settings.widgetStyle,'dark');
+  }
+});
+test('guest company images survive saving and can be removed safely',async()=>{
+  const logo='data:image/png;base64,iVBORw0KGgo=';
+  let s=await put({guest:{name:'Guest',logo},guests:[{name:'Saved guest',logo}]});
+  assert.equal(s.guest.logo,logo);assert.equal(s.guests[0].logo,logo);
+  s=await put({guest:{...s.guest,logo:''}});assert.equal(s.guest.logo,'');
+  s=await put({guest:{name:'Guest',logo:'javascript:alert(1)'}});assert.equal(s.guest.logo,'');
+});
+test('broadcast theme is shared and persists across server restart',async()=>{
+  let s=await get();s=await put({settings:{...s.settings,themeMode:'auto'}});
+  assert.equal(s.settings.themeMode,'auto');await stop();await launch();assert.equal((await get()).settings.themeMode,'auto');
+});
+test('automatic theme follows Dublin time including daylight saving boundaries',async()=>{
+  const {resolveTheme}=await import('../dist/theme.js');
+  for(const [time,result] of [['2026-11-12T06:59:00Z','dark'],['2026-11-12T07:00:00Z','light'],['2026-11-12T18:59:00Z','light'],['2026-11-12T19:00:00Z','dark'],['2026-07-12T18:00:00Z','dark'],['2026-07-12T06:00:00Z','light']])assert.equal(resolveTheme('auto',new Date(time)),result);
+  assert.equal(resolveTheme('light',new Date('2026-11-12T23:00:00Z')),'light');
+});
+test('scene motion stays shared and random choices do not repeat consecutively',async()=>{
+  const {motionChoice,backgrounds,transitions}=await import('../dist/motion.js');
+  let s=await get();s=await put({scene:'live',settings:{...s.settings,sceneBackground:'random',sceneTransition:'random'}});
+  for(const scene of ['starting','break','technical','live']){const previous=s;s=await put({scene});assert.notEqual(motionChoice('random',s.sceneSeed,backgrounds),motionChoice('random',previous.sceneSeed,backgrounds));assert.notEqual(motionChoice('random',s.sceneSeed,transitions),motionChoice('random',previous.sceneSeed,transitions));}
+  const seed=s.sceneSeed;s=await put({settings:{...s.settings,sceneBackground:'nebula'}});assert.equal(s.sceneSeed,seed);assert.equal(motionChoice(s.settings.sceneBackground,seed,backgrounds),'nebula');
+});
+test('operator preview uses live animation mode, never screenshot capture mode',async()=>{
+  const html=await(await fetch(base+'/')).text();
+  const src=html.match(/<iframe[^>]+src="([^"]+)"/)[1].replaceAll('&amp;','&');
+  const url=new URL(src,base);assert.equal(url.searchParams.get('preview'),'1');assert.equal(url.searchParams.has('capture'),false);
 });

@@ -27,7 +27,7 @@ let queue = Promise.resolve();
 
 function str(v, fallback, max = 240) { return typeof v === 'string' ? v.slice(0, max) : fallback; }
 function number(v, fallback, min, max) { return Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : fallback; }
-function person(p = {}) { return { name: str(p.name, '', 90), role: str(p.role, '', 100), organization: str(p.organization, '', 100) }; }
+function person(p = {}) { return { logo: typeof p.logo === 'string' && /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(p.logo) && p.logo.length <= 1400000 ? p.logo : '', name: str(p.name, '', 90), role: str(p.role, '', 100), organization: str(p.organization, '', 100) }; }
 export function normalize(input) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Expected a state object');
   const d = structuredClone(defaults), s = input;
@@ -37,15 +37,16 @@ export function normalize(input) {
   if (Array.isArray(s.teams)) d.teams = s.teams.slice(0, 100).map(team => str(team, '', 120));
   if (s.lowerPosition === 'left' || s.lowerPosition === 'center') d.lowerPosition = s.lowerPosition;
   for (const key of Object.keys(d.layers)) if (typeof s.layers?.[key] === 'boolean') d.layers[key] = s.layers[key];
-  if (['live','starting','break','ending'].includes(s.scene)) d.scene = s.scene;
+  if (['live','starting','break','ending','technical','standby','lunch','judging'].includes(s.scene)) d.scene = s.scene;
   d.announcement = { label: str(s.announcement?.label, d.announcement.label, 50), text: str(s.announcement?.text, d.announcement.text, 800) };
-  if (Array.isArray(s.partners)) d.partners = s.partners.slice(0, 30).map(p => ({ name: str(p.name,'',100), label: str(p.label,'PARTNER',60), logo: typeof p.logo === 'string' && (/^\/assets\/(?:[\w.-]+\/)*[\w.-]+$/.test(p.logo) || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(p.logo)) ? p.logo.slice(0, 1400000) : '' }));
+  if (Array.isArray(s.partners)) d.partners = s.partners.slice(0, 30).map(p => ({ background: p.background === 'dark' || (p.background !== 'light' && ['/assets/logo.svg','/assets/spaceapps.svg'].includes(p.logo)) ? 'dark' : 'light', name: str(p.name,'',100), label: str(p.label,'PARTNER',60), logo: typeof p.logo === 'string' && (/^\/assets\/(?:[\w.-]+\/)*[\w.-]+$/.test(p.logo) || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(p.logo)) ? p.logo.slice(0, 1400000) : '' }));
   if (Array.isArray(s.schedule)) d.schedule = s.schedule.slice(0, 100).map(p => ({ day: str(p.day,'',24), time: str(p.time,'TBA',24), title: str(p.title,'',120), detail: str(p.detail,'',800) }));
   d.activeSchedule = Math.floor(number(s.activeSchedule,0,0,Math.max(0,d.schedule.length-1)));
   const t = s.timer || {};
   d.timer = { duration: number(t.duration,600,1,172800), remaining: number(t.remaining,600,0,172800), endAt: t.endAt === null ? null : number(t.endAt,null,0,Date.now()+172800000), label: str(t.label,d.timer.label,70) };
   const c = s.settings || {};
-  d.settings = { accent: /^#[\da-f]{6}$/i.test(c.accent) ? c.accent : d.settings.accent, safe: number(c.safe,64,24,160), speed: number(c.speed,35,12,120), autoHide: number(c.autoHide,12,0,120), guides: c.guides === true };
+  d.settings = { sceneBackground: ['random','orbits','stars','meteors','nebula','galaxy','grid','none'].includes(c.sceneBackground) ? c.sceneBackground : 'random', sceneTransition: ['random','wipe','iris','diagonal','shutter','fade','none'].includes(c.sceneTransition) ? c.sceneTransition : 'random', themeMode: ['light','dark','auto'].includes(c.themeMode) ? c.themeMode : 'light', widgetStyle: ['compact','standard','minimal','dark','banner'].includes(c.widgetStyle) ? c.widgetStyle : 'compact', logoVariant: ['icon','full','space','combined','stacked','icon-space'].includes(c.logoVariant) ? c.logoVariant : 'icon', accent: /^#[\da-f]{6}$/i.test(c.accent) ? c.accent : d.settings.accent, safe: number(c.safe,64,24,160), speed: number(c.speed,35,12,120), autoHide: number(c.autoHide,12,0,120), guides: c.guides === true };
+  d.sceneSeed = Math.floor(number(s.sceneSeed,0,0,2147483647));
   d.lowerHideAt = s.lowerHideAt === null ? null : number(s.lowerHideAt,null,0,Date.now()+120000);
   return d;
 }
@@ -69,7 +70,16 @@ const server = http.createServer(async (req,res) => {
       const data = JSON.parse(body);
       // Serialize disk writes and apply partial updates to the newest state.
       queue = queue.catch(()=>{}).then(async()=>{
-        const next = normalize({...state,...data}); await save(next);
+        const next = normalize({...state,...data});
+        const autoChanged = data.settings && next.settings.autoHide !== state.settings.autoHide;
+        const showRequested = data.layers?.lower === true && (!state.layers.lower || Object.hasOwn(data,'guest') || Object.hasOwn(data,'lowerPosition'));
+        const sceneChanged = next.scene !== state.scene;
+        if(sceneChanged){let seed;do{seed=Math.floor(Math.random()*2147483647);}while(seed%6===(state.sceneSeed || 0)%6 || seed%5===(state.sceneSeed || 0)%5);next.sceneSeed=seed;}
+        if (!next.layers.lower || next.scene !== 'live' || !next.settings.autoHide) next.lowerHideAt = null;
+        else if (autoChanged || (sceneChanged && next.scene === 'live') || (showRequested && !Object.hasOwn(data,'lowerHideAt'))) {
+          next.lowerHideAt = Date.now() + next.settings.autoHide * 1000;
+        }
+        await save(next);
       });
       await queue; return send(res,200,state);
     }
